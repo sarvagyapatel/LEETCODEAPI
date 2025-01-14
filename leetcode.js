@@ -1,105 +1,111 @@
-//graphql query
-const query = `
-  query getUserProfile($username: String!) {
-    allQuestionsCount {
-      difficulty
-      count
-    }
-    matchedUser(username: $username) {
-      contributions {
-        points
-      }
-      profile {
-        reputation
-        ranking
-      }
-      submissionCalendar
-      submitStats {
-        acSubmissionNum {
-          difficulty
-          count
-          submissions
-        }
-        totalSubmissionNum {
-          difficulty
-          count
-          submissions
-        }
-      }
-    }
-    recentSubmissionList(username: $username) {
-      title
-      titleSlug
-      timestamp
-      statusDisplay
-      lang
-      __typename
-    }
-    matchedUserStats: matchedUser(username: $username) {
-      submitStats: submitStatsGlobal {
-        acSubmissionNum {
-          difficulty
-          count
-          submissions
-          __typename
-        }
-        totalSubmissionNum {
-          difficulty
-          count
-          submissions
-          __typename
-        }
-        __typename
-      }
-    }
-  }
-`;
+// leetcode.js
+const axios = require('axios');
 
-
-// format data 
+// Format data for a single user
 const formatData = (data) => {
-    let sendData =  {
-        totalSolved: data.matchedUser.submitStats.acSubmissionNum[0].count,
-        totalSubmissions:  data.matchedUser.submitStats.totalSubmissionNum,
-        totalQuestions: data.allQuestionsCount[0].count,
-        easySolved: data.matchedUser.submitStats.acSubmissionNum[1].count,
-        totalEasy: data.allQuestionsCount[1].count,
-        mediumSolved: data.matchedUser.submitStats.acSubmissionNum[2].count,
-        totalMedium: data.allQuestionsCount[2].count,
-        hardSolved: data.matchedUser.submitStats.acSubmissionNum[3].count,
-        totalHard: data.allQuestionsCount[3].count,
-        ranking: data.matchedUser.profile.ranking,
-        contributionPoint: data.matchedUser.contributions.points,
-        reputation: data.matchedUser.profile.reputation,
-        submissionCalendar: JSON.parse(data.matchedUser.submissionCalendar),
-        recentSubmissions: data.recentSubmissionList,
-        matchedUserStats: data.matchedUser.submitStats
-    }
-    return sendData;
-}
+  return {
+    recentSubmissions: JSON.parse(data.matchedUser.submissionCalendar),
+    levels: data.matchedUser.submitStats.acSubmissionNum.map((level) => ({
+      difficulty: level.difficulty,
+      solved: level.count,
+      total: data.allQuestionsCount.find((l) => l.difficulty === level.difficulty)?.count || 0,
+    })),
+  };
+};
 
-//fetching the data
-exports.leetcode = (req, res) => {
-    let user = req.params.id;
-    fetch('https://leetcode.com/graphql', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Referer': 'https://leetcode.com'
-        }, 
-        body: JSON.stringify({query: query, variables: {username: user}}),
-    
-    })
-    .then(result => result.json())
-    .then(data => {
-      if(data.errors){
-        res.send(data);
-      }else {
-        res.send(formatData(data.data));
+// Function to handle a single user
+exports.leetcode = async (req, res) => {
+  const username = req.params.id; // Get username from URL parameter
+
+  const query = `
+    query getUserProfile($username: String!) {
+      matchedUser(username: $username) {
+        username
       }
-    })
-    .catch(err=>{
-        console.error('Error', err);
-        res.send(err);
+    }
+  `;
+
+  try {
+    const response = await axios.post(
+      'https://leetcode.com/graphql',
+      { query, variables: { username } },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Referer: 'https://leetcode.com',
+        },
+      }
+    );
+
+    const data = response.data;
+    if (data.errors) {
+      return res.status(400).json({ error: data.errors });
+    }
+    res.json({message:true});
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+};
+
+
+exports.leetcodeBatch = async (req, res) => {
+  const users = req.body.usernames;
+
+  if (!Array.isArray(users) || users.length === 0) {
+    return res.status(400).json({ error: 'Please provide an array of usernames.' });
+  }
+
+  const query = `
+    query getUserProfile($username: String!) {
+      matchedUser(username: $username) {
+        submitStats {
+          acSubmissionNum {
+            difficulty
+            count
+          }
+        }
+        submissionCalendar
+      }
+      allQuestionsCount {
+        difficulty
+        count
+      }
+    }
+  `;
+
+  try {
+    const requests = users.map((username) =>
+      axios.post(
+        'https://leetcode.com/graphql',
+        { query, variables: { username } },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Referer: 'https://leetcode.com',
+          },
+        }
+      )
+    );
+
+    const responses = await Promise.allSettled(requests);
+
+    const results = responses.map((response, index) => {
+      if (response.status === 'fulfilled') {
+        const data = response.value.data;
+        
+        if (data.errors) {
+          return { username: users[index], error: data.errors };
+        }
+        return { username: users[index], data: formatData(data.data) };
+      } else {
+        return { username: users[index], error: response.reason.message };
+      }
     });
-}
+
+    res.json(results);
+  } catch (error) {
+    console.error('Batch Error:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+};
